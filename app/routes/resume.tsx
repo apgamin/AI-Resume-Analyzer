@@ -16,38 +16,62 @@ const Resume = () => {
     const [imageUrl, setImageUrl] = useState('');
     const [resumeUrl, setResumeUrl] = useState('');
     const [feedback, setFeedback] = useState<Feedback | null>(null);
+    const [loadError, setLoadError] = useState('');
     const navigate = useNavigate();
 
     useEffect(() => {
         if(!isLoading && !auth.isAuthenticated) navigate(`/auth?next=/resume/${id}`);
-    }, [isLoading])
+    }, [auth.isAuthenticated, id, isLoading, navigate])
 
     useEffect(() => {
+        if (isLoading || !auth.isAuthenticated || !id) return;
+
+        let isActive = true;
+
         const loadResume = async () => {
-            const resume = await kv.get(`resume:${id}`);
+            try {
+                setLoadError('');
+                const resume = await kv.get(`resume:${id}`);
 
-            if(!resume) return;
+                if (!resume) {
+                    throw new Error('This resume analysis could not be found. Please analyze the resume again.');
+                }
 
-            const data = JSON.parse(resume);
+                const data = JSON.parse(resume);
+                if (!data.feedback || typeof data.feedback !== 'object') {
+                    throw new Error('The resume analysis was incomplete. Please analyze the resume again.');
+                }
 
-            const resumeBlob = await fs.read(data.resumePath);
-            if(!resumeBlob) return;
+                // Show the AI feedback independently of the optional document previews.
+                if (isActive) setFeedback(data.feedback);
 
-            const pdfBlob = new Blob([resumeBlob], { type: 'application/pdf' });
-            const resumeUrl = URL.createObjectURL(pdfBlob);
-            setResumeUrl(resumeUrl);
+                const [resumeBlob, imageBlob] = await Promise.all([
+                    fs.read(data.resumePath),
+                    fs.read(data.imagePath),
+                ]);
 
-            const imageBlob = await fs.read(data.imagePath);
-            if(!imageBlob) return;
-            const imageUrl = URL.createObjectURL(imageBlob);
-            setImageUrl(imageUrl);
+                if (!isActive) return;
 
-            setFeedback(data.feedback);
-            console.log({resumeUrl, imageUrl, feedback: data.feedback });
-        }
+                if (resumeBlob) {
+                    setResumeUrl(URL.createObjectURL(new Blob([resumeBlob], { type: 'application/pdf' })));
+                }
+                if (imageBlob) {
+                    setImageUrl(URL.createObjectURL(imageBlob));
+                }
+            } catch (error) {
+                if (!isActive) return;
+                const message = error instanceof Error ? error.message : 'Unable to load the resume analysis.';
+                console.error('Failed to load resume:', error);
+                setLoadError(message);
+            }
+        };
 
         loadResume();
-    }, [id]);
+
+        return () => {
+            isActive = false;
+        };
+    }, [auth.isAuthenticated, fs, id, isLoading, kv]);
 
     return (
         <main className="!pt-0">
@@ -73,7 +97,9 @@ const Resume = () => {
                 </section>
                 <section className="feedback-section">
                     <h2 className="text-4xl !text-black font-bold">Resume Review</h2>
-                    {feedback ? (
+                    {loadError ? (
+                        <p className="text-red-600 text-center">{loadError}</p>
+                    ) : feedback ? (
                         <div className="flex flex-col gap-8 animate-in fade-in duration-1000">
                             <Summary feedback={feedback} />
                             <ATS score={feedback.ATS.score || 0} suggestions={feedback.ATS.tips || []} />
